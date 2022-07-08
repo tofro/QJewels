@@ -1,0 +1,988 @@
+100 REMark **********************************************************************
+110 REMark * Jewels_bas                                                         *
+120 REMark * a game originally inspired by the unix/Linux version               *
+130 REMark * New implementation in SuperBasic and Turbo by                      *
+140 REMark * Tobias Fr„schle                                                    *
+150 REMark * Open issues:
+160 REMark * When switching from small to large icons, 2310: Value out of range
+170 REMark **********************************************************************
+180 REMark Extensions and appendices
+190 REMark Qjewels0_app holds all the menus
+200 REMark %%dos8_qjewels_qjewels0_app,0,60
+210 REMark qjewels1_app holds all the half-size and size-independent sprites
+220 REMark %%dos8_qjewels_qjewels1_app,0,60
+230 REMark qjewels2_app holds the large sprites
+240 REMark %%dos8_qjewels_qjewels2_app,0,60
+250 REMark this holds the config block for configurable items
+260 REMark %%dos8_qjewels_qjewels_ins,1,0
+270 REMark %%win1_easyptr_ptrmen_cde,4,82
+280 REMark %%win1_system_turbo_sms_cde,0,60
+290 :
+300 :
+310 REMark Directives for Turbo compilation
+320 TURBO_buffersz     192
+330 TURBO_diags        "N"
+340 TURBO_locstr       1
+350 TURBO_model        ">"
+360 TURBO_objdat       16
+370 TURBO_objfil       "ram1_qjewels_exe"
+380 TURBO_optim        "REMS"
+390 TURBO_repfil       "ram1_qjewels_list"
+400 TURBO_struct       "S"
+410 TURBO_taskn        "QJewels GD2"
+420 TURBO_windo        0
+430 :
+440 REMark Constants and other declarations
+450 MANIFEST : FIELDSIZE% = 8
+460 MANIFEST : TIMEOUT% = 5000 : REMark TIMEOUT is for later expansion!
+470 REMark constants for Pointer events
+480 MANIFEST : cKeyPressed% = 1 : cKeyDown% = 2 : cNoKey% = 4 : cPtrMove% = 8 : cPtrOut% = 16 : cPtrIn% = 32
+490 REMark constants for sprite sizes
+500 MANIFEST : THERMOWIDTH% = 7 : THERMOHEIGHT% = 210 : THERMOLMARGIN% = 2 : THERMOCOLOUR = 44683
+510 MANIFEST : MAXSCORE = 10000
+520 bigSprites = 1
+530 REMark flag whether we use big or small layout
+540 IMPLICIT% i, j, k
+550 :
+560 REMark The global variables
+570 REMark this is where the tiles live
+580 DIM p$(FIELDSIZE%, FIELDSIZE%)
+590 REMark The Game Field
+600 DIM PlayField% (FIELDSIZE%, FIELDSIZE%)
+610 REMark The field that holds the jewels to be removed
+620 DIM deadplay% (FIELDSIZE%, FIELDSIZE%)
+630 REMark holds the last move as x1, y1, x2, y2 (when undo is needed)
+640 DIM lastMove% (4)
+650 REMark holds the next possible move
+660 DIM possibleMove%(4)
+670 REMark This is the array of sprite addresses
+680 DIM diamonds(7)
+690 REMark The pointer vector for PVAL
+700 DIM pvec%(16)
+710 REMark holds the currently selected tile
+720 DIM selection%(2)
+730 REMark holds the sound file names
+740 DIM sounds$(6,30)
+750 REMark Holds the sound file names from the config block
+760 DIM sf0$(40), sf1$(40),sf2$(40),sf3$(40),sf4$(40),sf5$(40)
+770 REMark Flag whether we have sound or not
+780 soundEnabled = 1
+790 :
+800 REMark Some Variables we don't only want to exist as LOCals
+810 DIM dummy$(100) : DIM score$(100) : DIM sf0$(100)
+820 :
+830 REMark Get settings from the config block
+840 ReadConfig
+850 REMark Initialize the game
+860 InitGame
+870 REMark ...and let it roll
+880 Game
+890 :
+900 REMark This is where the interesting things happen
+910 DEFine PROCedure Game
+920   LOCal key, lm%, rm%, lMouseDown%, rMouseDown%, xPos%, yPos%, keyCode%, tvec%, done
+930   :
+940   initialRemove
+950   :
+960   REPeat GameLoop
+970     event% = 255
+980     REMark Stop and ask for a new game when no more moves possible
+990     IF NOT movePossible THEN
+1000       noMoveDialog
+1010       initialRemove
+1020     END IF
+1030     :
+1040     key = MCALLT(#winw%, event%, TIMEOUT%, -1, 0, -2, 0, -3, 0, -4, 0, -5, 0)
+1050     IF winw% < 0 THEN
+1060       REPORT winw% : PRINT " In Line 930"
+1070       STOP
+1080     END IF
+1090     :
+1100     SELect ON key
+1110       = 1 : REMark something happened in the application window
+1120          appWinHandler
+1130       = -1 : REMark "Move" button
+1140          WMOV #winw%,-1
+1150          REMark re-attach application windows (They are not moved by WMOV -1)
+1160          MWLINK #winw%\ 1, #appwin
+1170          MWLINK #winw%\2, #thermwin
+1180       = -2 : REMark "Quit" Button
+1190          quitMenu
+1200       = -3 : REMark "Buttonize" Button
+1210          EXEP "button_sleep"
+1220       = -4 : REMark "G" key or "Game" LI press
+1230          gameMenu
+1240          initialRemove
+1250       = -5 : REMark Hint
+1260         IF (possibleMove%(0) <> -1) THEN
+1270           doHintAnimation possibleMove%(0), possibleMove%(1)
+1280           updateScore -5
+1290         END IF
+1300       = REMAINDER
+1310         REMark if not compiled : print #0, "Other Key:";key
+1320     END SELect
+1330   END REPeat GameLoop
+1340 END DEFine
+1350 :
+1360 REMark here is the special handler for "mouse in app window"
+1370 REMark needs to be there because MCALL doesn't detect "Mouse button up"
+1380 REMark this piece of code should be re-usable by anything interactively
+1390 REMark using the mouse and in need of low-level events
+1400 REMark First waits in a Loop for key (or button) presses and in a second loop for the release
+1410 DEFine PROCedure appWinHandler
+1420   LOCal xPos%, yPos%, lMouseDown%, rMouseDown%, keyCode%, pvec%(16),tvec%
+1430   :
+1440   REPeat pressLoop
+1450     REMark wait for key down or ptr leave window
+1460     tvec% = cKeyDown% || cPtrOut% || cKeyPressed%
+1470     RDPT #appwin, tvec%
+1480     PVAL #appwin, pvec%
+1490     keyCode% = pvec%(5)
+1500     xPos% = pvec%(3) : yPos% = pvec%(4)
+1510     IF (pvec%(7) && cPtrOut%) THEN
+1520       REMark pointer left window
+1530       IF NOT COMPILED : PRINT#0;"Pointer left window!"
+1540       REMark we need to de-select anything and set the pointer back to arrow
+1550       setCursorSprite 0
+1560       removeSelection
+1570       CLPT #appwin : REMark is this needed or will that cause problems?
+1580       EXIT pressLoop
+1590     END IF
+1600     IF pvec%(7) && (cKeyDown% || cKeyPressed%) THEN
+1610       REMark we have a key (or button) press
+1620       SELect ON keyCode%
+1630         = 1
+1640           onLeftButtonDown xPos%, yPos%
+1650           EXIT pressLoop
+1660         = 2
+1670           onRightbuttondown xPos%,yPos%
+1680           EXIT pressLoop
+1685         = 0 : REMark some other key!
+1687           keyCode% = pvec%(6)
+1688           SELect ON keyCode%
+1689             REMark can't get this to work!
+1690             REMark = 71,103 : REMark "G"
+1700             REMark   gameMenu
+1710             REMark   removeSelection
+1720             REMark   setCursorSprite 0
+1730             REMark   RETurn
+1740             = 72,104 : REMark "H"
+1741               IF (possibleMove%(0) <> -1) THEN
+1742                 doHintAnimation possibleMove%(0), possibleMove%(1)
+1743                 updateScore -5
+1745               END IF
+1765           END SELect
+1770       END SELect
+1780     END IF
+1790   END REPeat pressLoop
+1800   :
+1810   REPeat readLoop
+1820     tvec% = cNoKey% || cPtrMove% : REMark Button up or move
+1830     RDPT #appwin,tvec%
+1840     PVAL #appwin,pvec%
+1850     IF (pvec%(7) && 16) THEN
+1860       REMark pointer left window - go back to main loop
+1870       IF NOT COMPILED : PRINT #0;"Pointer left window!"
+1880       EXIT readLoop
+1890     END IF
+1900     IF (pvec%(7) && 4) THEN
+1910       REMark button up
+1920       xPos% = pvec%(3) : yPos% = pvec%(4)
+1930       IF keyCode% = 1 THEN
+1940         onLeftButtonup xPos%, yPos%
+1950       ELSE
+1960         IF keyCode% = 2 THEN
+1970           onrightButtonup xPos%, yPos%
+1980         END IF
+1990       END IF
+2000       EXIT readLoop
+2010     END IF
+2020   END REPeat readLoop
+2030   setCursorSprite 0
+2040   CLPT #appwin
+2050 END DEFine
+2060 :
+2070 DEFine PROCedure onLeftButtonDown (x%, y%)
+2080   LOCal xTile%, yTile%
+2090   IF NOT COMPILED : PRINT#0;"Left Button down";" Xpos = "; x%, "YPos = ";y%
+2100   xTile% = x% DIV SPRSIZE%
+2110   yTile% = y% DIV SPRSIZE%
+2120   selectTile xTile%, yTile%
+2130   setCursorSprite diamonds(PlayField%(xTile%, yTile%))
+2140 END DEFine
+2150 :
+2160 DEFine PROCedure onLeftButtonup (x%, y%)
+2170   LOCal xTile%, yTile%, oldTilex%, oldTiley%
+2180   xTile% = x% DIV SPRSIZE%
+2190   yTile% = y% DIV SPRSIZE%
+2200   IF haveSelection% THEN
+2210     oldTilex% = selection%(1)
+2220     oldTiley% = selection%(2)
+2230     IF (oldTilex% = xTile%) AND (oldTiley% = yTile%) THEN
+2240       setCursorSprite 0
+2250       removeSelection
+2260       RETurn
+2270     END IF
+2280     REMark restore old cursor, otherwise the next drawing of a tile will fail!
+2290     setCursorSprite 0
+2300     playSound 2
+2310     exchangeTiles oldTilex%, oldTiley%, xTile%, yTile%
+2320     IF NOT checkRemove THEN
+2330       IF NOT COMPILED : AT#0,0,0 : PRINT #0,"Nothing to remove!"
+2340       playSound 4
+2350       exchangeTiles oldTilex%, oldTiley%, xTile%, yTile%
+2360     ELSE
+2370       IF NOT COMPILED : AT #0,0,0:PRINT #0,"Successful move!"
+2380       updateScore doRemove
+2390       drawPlayfield
+2400     END IF
+2410     updateScore doRemove
+2420   END IF
+2430   removeSelection
+2440 END DEFine
+2450 :
+2460 DEFine PROCedure onrightbuttondown (x%, y%)
+2470   IF NOT COMPILED : PRINT#0;"RightButton Down"; "Xpos = "; x%, "YPos = ";y%
+2480 END DEFine
+2490 :
+2500 DEFine PROCedure onrightButtonup (x%, y%)
+2510   IF NOT COMPILED : PRINT#0;"RightButton up";"Xpos = "; x%, "YPos = ";y%
+2520 END DEFine
+2530 :
+2540 DEFine PROCedure InitGame
+2550   LOCal i%,j%
+2560   REMark Open a console channel
+2570   channel = FOPEN ("con_")
+2580   IF channel < 0 THEN
+2590     IF NOT compiledm : PRINT #0;"Cannot open console:";
+2600     REPORT channel
+2610     STOP
+2620   END IF
+2630   winw% = channel
+2640   :
+2650   REMark now load the menu
+2660   IF bigSprites THEN
+2670     MDRAW #winw%, APPA0("main_l")
+2680   ELSE
+2690     MDRAW #winw%,APPA0("main_s")
+2700   END IF
+2710   IF (winw% < 0) THEN
+2720     PRINT #channel, "Could not draw initial Menu";
+2730     REPORT winw%
+2740     STOP
+2750   END IF
+2760   :
+2770   REMark initialize the application window
+2780   appwin = FOPEN ("con_")
+2790   thermwin = FOPEN ("con_")
+2800   MWLINK #winw%\ 1, #appwin
+2810   MWLINK #winw%\2, #thermwin
+2820   REMark now get the sprite addresses
+2830   LoadSprites
+2840   :
+2850   InitPlayfield
+2860   : REMark And now draw it....
+2870   DrawBackground
+2880   drawPlayfield
+2890   DrawThermometer
+2900   selection% (1) = 0 : selection% (2) = 0
+2910   haveSelection% = 0
+2920   score = 0
+2930   cleanDeadplay
+2940   REMark Do NOT allocate SPRSIZE%, because if we start with small sprites, that will be too small
+2950   saveBuffer = WSAIN(#appwin, 54, 7 * 54)
+2960   :
+2970   REMark The sound initialisation
+2980   snd = FOP_IN("SOUND5")
+2990   IF snd > 0 THEN
+3000     sounds$(1) = HOME_DIR$ & sf0$
+3010     sounds$(2) = HOME_DIR$ & sf1$
+3020     sounds$(3) = HOME_DIR$ & sf2$
+3030     sounds$(4) = HOME_DIR$ & sf3$
+3040     sounds$(5) = HOME_DIR$ & sf4$
+3050     sounds$(6) = HOME_DIR$ & sf5$
+3060     :
+3070     CLOSE #snd
+3080     FOR i% = 1 TO 6
+3090       IF NOT fileExists(sounds$(i%)) THEN
+3100         soundEnabled = 0
+3110       END IF
+3120     END FOR i%
+3130     IF soundEnabled THEN
+3140       playSound 1
+3150       REMark give sound some time to play
+3160       PAUSE #channel, 200
+3170     END IF
+3180   ELSE
+3190     soundEnabled = 0
+3200   END IF
+3210   :
+3220 END DEFine InitGame
+3230 :
+3240 REMark this one fills the playfield with random tiles
+3250 DEFine PROCedure InitPlayfield
+3260   LOCal i%, j%
+3270   REMark init the playfield with random jewels
+3280   score = 0
+3290   FOR i% = 0 TO FIELDSIZE% - 1
+3300     FOR j% = 0 TO FIELDSIZE% - 1
+3310       PlayField% (i%,j%)= RND (0 TO 6)
+3320     END FOR j%
+3330   END FOR i%
+3340   :
+3350 END DEFine InitPlayfield
+3360 :
+3370 REMark this one draws the thermometer picture
+3380 DEFine PROCedure DrawThermometer
+3390   LOCal blockHeight
+3400   IF score > MAXSCORE : RETurn
+3410   IF score < 0 : RETurn
+3420   blockHeight = score * THERMOHEIGHT% / MAXSCORE
+3430   SPRW #thermwin, 0, 0, thermometerSprite
+3440   WM_BLOCK #thermwin, THERMOWIDTH%, blockHeight, THERMOLMARGIN%, THERMOHEIGHT% - blockHeight, THERMOCOLOUR
+3450 END DEFine
+3460 :
+3470 DEFine PROCedure drawPlayfield
+3480   LOCal i, j
+3490   FOR i = 0 TO DIMN (PlayField%,1) - 1
+3500     FOR j = 0 TO DIMN (PlayField%,2) - 1
+3510       drawTile i, j
+3520       REMark SPRW #appwin, i * SPRSIZE%, j * SPRSIZE%, diamonds(PlayField%(i,j))
+3530     END FOR j
+3540   END FOR i
+3550 END DEFine drawPlayfield
+3560 :
+3570 :
+3580 REMark this one draws the complete (chequered) background
+3590 DEFine PROCedure DrawBackground
+3600   LOCal i, j
+3610   REMark draw the Background image
+3620   PAPER#appwin,0
+3630   CLS #appwin
+3640   REMark now draw the tiled background
+3650   FOR i = 0 TO DIMN (PlayField%, 1) - 1
+3660     FOR j = 0 TO DIMN (PlayField%, 2) - 1
+3670       SPRW #appwin, i * SPRSIZE%, j * SPRSIZE%, getEmptyTile (i, j)
+3680     END FOR j
+3690   END FOR i
+3700 END DEFine DrawBackground
+3710 :
+3720 REMark this sets the sprite for the application window to the selected tile
+3730 DEFine PROCedure setCursorSprite(index)
+3740   IF index = 0 THEN
+3750     SPRS #appwin,0
+3760     IF (mousesprite <> 0) THEN
+3770       REMark patch the sprite so that origin is top left again
+3780       POKE_W mousesprite + 8, 0
+3790       POKE_W mousesprite + 10, 0
+3800     END IF
+3810   ELSE
+3820     REMark patch the sprite origin to the center
+3830     POKE_W index + 8, SPRSIZE% DIV 2
+3840     POKE_W index + 10, SPRSIZE% DIV 2
+3850     SPRS #appwin,index
+3860   END IF
+3870   mousesprite = index
+3880 END DEFine
+3890 :
+3900 REMark This loads the sprites (either from disk, or from appendix)
+3910 REMark (Well, no way to do it from disk in EasyPtr)
+3920 DEFine PROCedure LoadSprites
+3930   LOCal temp, i
+3940 :
+3950   IF bigSprites THEN
+3960     SPRSIZE% = 54
+3970     tileEven = APPA2 ("tile_e")
+3980     tileOdd  = APPA2 ("tile_o")
+3990     FOR i = 0 TO 6
+4000       temp = APPA2 ("diam" & i)
+4010       diamonds (i) = temp
+4020     END FOR i
+4030     cursorSprite = APPA2 ("cursor")
+4040   ELSE
+4050     SPRSIZE% = 27
+4060     tileEven = APPA1 ("tile_e")
+4070     tileOdd  = APPA1 ("tile_o")
+4080     FOR i = 0 TO 6
+4090       temp = APPA1 ("diam" & i)
+4100       diamonds (i) = temp
+4110     END FOR i
+4120     cursorSprite = APPA1 ("cursor")
+4130   END IF
+4140   thermometerSprite = APPA1("thermo")
+4150 END DEFine
+4160 :
+4170 REMark Draws a field with the matching background tile
+4180 DEFine PROCedure clearField(x%, y%)
+4182   REMark QXLhas problems with drawing sprites on top of each other.
+4183   REMark That's why we need to clear the background first
+4185   WM_BLOCK #appwin, SPRSIZE%, SPRSIZE%, x% * SPRSIZE%, y% * SPRSIZE%, 0
+4190   SPRW #appwin, x% * SPRSIZE%, y% * SPRSIZE%, getEmptyTile (x%, y%)
+4200 END DEFine clearField
+4210 :
+4220 DEFine PROCedure removeSelection
+4230   LOCal x%, y%
+4240   IF haveSelection% THEN
+4250     haveSelection% = 0
+4260     x% = selection%(1)
+4270     y% = selection%(2)
+4280     drawTile x%, y%
+4290   END IF
+4300   selection% (1) = 0
+4310   selection% (2) = 0
+4320 END DEFine removeSelection
+4330 :
+4340 REMark This draws a specific game sprite at x, y
+4350 DEFine PROCedure drawTile (x%, y%)
+4360   clearField x%, y%
+4370   SPRW #appwin, x% * SPRSIZE%, y% * SPRSIZE%, diamonds(PlayField% (x%, y%))
+4380 END DEFine drawTile
+4390 :
+4400 REMark This sets the selected tile to x, y
+4410 REMark draws a Handle around the tile
+4420 DEFine PROCedure selectTile (x%, y%)
+4430   IF (haveSelection%) THEN
+4440     removeSelection
+4450   END IF
+4460   SPRW #appwin, x% * SPRSIZE%, y% * SPRSIZE%, cursorSprite
+4470   selection% (1) = x%
+4480   selection% (2) = y%
+4490   haveSelection% = 1
+4500 END DEFine selectTile
+4510 :
+4520 REMark This procedure exchanges two tiles after a user move
+4530 REMark x1, y1 must be the tile "on the mouse", x2, y2 is
+4540 REMark where it's being moved to
+4550 DEFine PROCedure exchangeTiles(x1%, y1%, x2%, y2%)
+4560   LOCal diffx%, diffy%, tmpTile%
+4570   diffx% = x2% - x1% : diffy% = y2% - y1%
+4580   IF (ABS(diffx%) + ABS (diffy%) > 1) THEN
+4590     REMark invalid move. just return for now
+4600     REMark we might want to have a silly beep or nice animation here...
+4610     IF NOT COMPILED : PRINT #0;"Invalid move.",diffx%, diffy%
+4620     RETurn
+4630   END IF
+4640   :
+4650   REMark Remember where we came from so that we're able to undo
+4660   REMark the move if nothing can be removed from the board
+4670   lastMove%(1) = x1%
+4680   lastMove%(2) = y1%
+4690   lastMove%(3) = x2%
+4700   lastMove%(4) = y2%
+4710   :
+4720   REMark the Sprite we have "on the mouse" should vanish...
+4730   doFadeoutAnimation x1%, y1%
+4740   doMoveAnimation x2%, y2%, x1%, y1%
+4750   REMark now save the move in the playfield
+4760   tmpTile% = PlayField%(x1%, y1%)
+4770   PlayField%(x1%, y1%) = PlayField%(x2%, y2%)
+4780   PlayField%(x2%, y2%) = tmpTile%
+4790 END DEFine
+4800 :
+4810 REMark this function returns the empty tile for the specific location
+4820 DEFine FuNction getEmptyTile (x%, y%)
+4830   IF (x% + y%) MOD 2 = 1 THEN
+4840     emptyTile = tileEven
+4850   ELSE
+4860     emptyTile = tileOdd
+4870   END IF
+4880   RETurn emptyTile
+4890 END DEFine
+4900 :
+4910 DEFine PROCedure updateScore(diff)
+4920   LOCal score$
+4930   score = score + diff
+4940   IF score < 0 : score = 0
+4950   score$ = score
+4960   score$ = FILL$('0', 6 -LEN(score$)) & score$
+4970   DrawThermometer
+4980   MINOB #winw%,3,1,"Score: "&score$
+4990   REMark Redraw all loose items - otherwise they might vanish
+5000   MLIDRAW #winw%
+5010 END DEFine
+5020 :
+5030 REMark *********************************************************
+5040 REMark * Animation Subroutines
+5050 REMark *********************************************************
+5060 :
+5070 REMark This routine "fades out" a tile with its corresponding background tile
+5080 REMark "Spraying" the tile sprite onto the picture doesn't seem to be
+5090 REMark implemented in GD2 according to Marcel. So, some other means had to be
+5100 REMark found. We're now simply drawing shrinking rectangles over the sprite to vanish
+5110 DEFine PROCedure doFadeoutAnimation (x%, y%)
+5120   LOCal i
+5130   FOR i = 1 TO (SPRSIZE% / 2) STEP 3
+5140     IRect appwin, x% * SPRSIZE% + i, y% * SPRSIZE% + i, (x% + 1) * SPRSIZE% - i - 1, (y% + 1) * SPRSIZE% - i - 1, 0
+5150     PAUSE #channel,1
+5160   END FOR i
+5170   REMark now draw the empty tile here....
+5180   clearField x%, y%
+5190 END DEFine
+5200 :
+5210 DEFine PROCedure doMoveAnimation (x1%, y1%, x2%, y2%)
+5220   LOCal xdiff%, ydiff%, movedSprite, i
+5230   xdiff% = x2% - x1% : ydiff% = y2% -y1%
+5240   movedSprite = diamonds(PlayField%(x1%, y1%))
+5250   FOR i = 1 TO SPRSIZE% STEP SPRSIZE% DIV 10
+5260     REMark delete both
+5270     clearField x1%, y1% : clearField x2%, y2%
+5280     SPRW #appwin, x1% * SPRSIZE% + i * xdiff%, y1% * SPRSIZE% + i * ydiff%, movedSprite
+5290     PAUSE #channel,1
+5300   END FOR i
+5310   clearField x1%, y1%
+5320   SPRW #appwin, x1% * SPRSIZE%, y1% * SPRSIZE%, diamonds(PlayField%(x2%,y2%))
+5330 END DEFine
+5340 :
+5350 REMark this animates the "fall down" of a complete stack of tiles
+5360 REMark x%|y% is the tile that has just been cleared
+5370 REMark the stack is being saved in the saveBuffer area installed at InitGame
+5380 DEFine PROCedure doStackRemoveAnimation (x%, y%)
+5390   LOCal xPix%, yPix%, wPix%, hPix%, i, j
+5400   IF y% = 0 : RETurn
+5410   xPix% = x% * SPRSIZE%
+5420   yPix% = 0
+5430   wPix% = SPRSIZE%
+5440   hPix% = y% * SPRSIZE% - 1
+5450   REMark remove the pointer when picking images from the screen!
+5460   REMark REMPT #appwin
+5470   WSASV #appwin, saveBuffer, wPix%, hPix%, xPix%, yPix%, 0, 0
+5480   playSound 5
+5490   FOR i = 0 TO 9
+5492     REMark qxl has problems with artefacts that stay on the screen
+5493     REMark this is why we need to clear the fields we animate explicitely
+5495     FOR j = 0 TO y%
+5500       clearField x%, y%
+5505     END FOR j
+5510     WSARS #appwin, saveBuffer\wPix%, hPix%, xPix%, yPix% + i * (SPRSIZE% DIV 10)
+5520     PAUSE #channel,1
+5530   END FOR i
+5540   FOR i = y%  + (y% < 7) TO 0 STEP - 1
+5550     drawTile x%, i
+5560   END FOR i
+5570 END DEFine
+5580 :
+5590 REMark Highlights the tile that could be moved next
+5600 DEFine PROCedure doHintAnimation (x%, y%)
+5610   LOCal i
+5620   FOR i = 1 TO (SPRSIZE% / 2) STEP 3
+5630     IRect appwin, x% * SPRSIZE% + i, y% * SPRSIZE% + i, (x% + 1) * SPRSIZE% - i - 1, (y% + 1) * SPRSIZE% - i - 1, 0
+5640     PAUSE #channel,1
+5650   END FOR i
+5660   REMark now draw the correct tile here....
+5670   drawTile x%, y%
+5680 END DEFine
+5690 :
+5700 REMark Simple Procedure to draw a rectangle in pixel coordinates
+5710 DEFine PROCedure IRect(chan, x1%, y1%, x2%, y2%, col)
+5720   LOCal width%, height%
+5730   width% = ABS(x2% -x1%) : height% = ABS (y2% -y1%)
+5740   BLOCK #chan, width%, 1, x1%, y1%, col
+5750   BLOCK #chan, width%, 1, x1%, y2%, col
+5760   BLOCK #chan, 1, height%, x1%, y1%, col
+5770   BLOCK #chan, 1, height%, x2%, y1%, col
+5780 END DEFine
+5790 :
+5800 REMark Playing sounds is also considered "Some sort of animation" ;)
+5810 DEFine PROCedure playSound (s)
+5820   IF NOT soundEnabled : RETurn
+5830   :
+5840   SPL sounds$(s) TO "SOUND5"
+5850 END DEFine
+5860 :
+5870 REMark *************************************************************
+5880 REMark * Actual game subroutines (the game logic is here)
+5890 REMark *************************************************************
+5900 REMark This removes as much as possible from freshly initialized playfields
+5910 DEFine PROCedure initialRemove
+5920   REPeat initial
+5930     IF checkRemove THEN
+5940       updateScore doRemove
+5950       drawPlayfield
+5960     ELSE
+5970       EXIT initial
+5980     END IF
+5990   END REPeat initial
+6000 END DEFine
+6010 :
+6020 REMark The following Procedure checks whether something can be removed
+6030 DEFine FuNction checkRemove
+6040   LOCal i, j, result, minResult%, maxResult%
+6050   REMark clean our result array
+6060   cleanDeadplay
+6070   result = 0
+6080   FOR i = 0 TO DIMN (PlayField%, 1) - 1
+6090     FOR j = 0 TO DIMN (PlayField%, 2) - 1
+6100       minResult% = searchleft% (i, j, PlayField%(i, j))
+6110       maxResult% = searchRight% (i, j, PlayField%(i, j))
+6120       IF minResult% + maxResult% >= 2 THEN
+6130         markHoriz i - minResult%, i + maxResult%, j
+6140         result = 1
+6150       END IF
+6160       minResult% = searchUp% (i, j, PlayField%(i, j))
+6170       maxResult% = searchDown% (i, j, PlayField%(i, j))
+6180       IF minResult% + maxResult% >= 2 THEN
+6190         markVert i, j - minResult%, j + maxResult%
+6200         result = 1
+6210       END IF
+6220     END FOR j
+6230   END FOR i
+6240   IF NOT COMPILED : PRINT#0;"CheckRemove: ";result
+6250   RETurn result
+6260 END DEFine checkRemove
+6270 :
+6280 DEFine FuNction searchleft% (x%, y%, tile%)
+6290   LOCal result%, locx%
+6300   locx% = x% - 1
+6310   result% = 0
+6320   REPeat searchloop
+6330     IF locx% < 0 : EXIT searchloop
+6340     IF PlayField%(locx%, y%) = tile%
+6350       result% = result% + 1
+6360       locx% = locx% - 1
+6370     ELSE
+6380       EXIT searchloop
+6390     END IF
+6400   END REPeat searchloop
+6410   RETurn result%
+6420 END DEFine
+6430 :
+6440 DEFine FuNction searchRight% (x%, y%, tile%)
+6450   LOCal result%, locx%
+6460   locx% = x% + 1
+6470   result% = 0
+6480   REPeat searchloop
+6490     IF locx% >= FIELDSIZE% : EXIT searchloop
+6500     IF PlayField%(locx%, y%) = tile%
+6510       result% = result% + 1
+6520       locx% = locx% + 1
+6530     ELSE
+6540       EXIT searchloop
+6550     END IF
+6560   END REPeat searchloop
+6570   RETurn result%
+6580 END DEFine
+6590 :
+6600 DEFine FuNction searchUp% (x%, y%, tile%)
+6610   LOCal result%, locy%
+6620   locy% = y% - 1
+6630   result% = 0
+6640   REPeat searchloop
+6650     IF locy% < 0 : EXIT searchloop
+6660     IF PlayField%(x%, locy%) = tile%
+6670       result% = result% + 1
+6680       locy% = locy% - 1
+6690     ELSE
+6700       EXIT searchloop
+6710     END IF
+6720   END REPeat searchloop
+6730   RETurn result%
+6740 END DEFine
+6750 :
+6760 DEFine FuNction searchDown% (x%, y%, tile%)
+6770   LOCal result%, locy%
+6780   locy% = y% + 1
+6790   result% = 0
+6800   REPeat searchloop
+6810     IF locy% >= FIELDSIZE% : EXIT searchloop
+6820     IF PlayField%(x%, locy%) = tile%
+6830       result% = result% + 1
+6840       locy% = locy% + 1
+6850     ELSE
+6860       EXIT searchloop
+6870     END IF
+6880   END REPeat searchloop
+6890   RETurn result%
+6900 END DEFine
+6910 :
+6920 DEFine PROCedure markVert (x%, from%, to%)
+6930   LOCal i
+6940   FOR i = from% TO to%
+6950     deadplay%(x%, i) = 1
+6960   END FOR i
+6970 END DEFine
+6980 :
+6990 DEFine PROCedure markHoriz (from%, to%, y%)
+7000   LOCal i
+7010   FOR i = from% TO to%
+7020     deadplay% (i, y%) = 1
+7030   END FOR i
+7040 END DEFine
+7050 :
+7060 REMark This one clears the deadplay% field for the next iteration
+7070 DEFine PROCedure cleanDeadplay
+7080   LOCal i, j
+7090   FOR i = 0 TO DIMN (deadplay%, 1) - 1
+7100     FOR j = 0 TO DIMN (deadplay%, 2) - 1
+7110       deadplay%(i, j) = 0
+7120     END FOR j
+7130   END FOR i
+7140 END DEFine cleanDeadplay
+7150 :
+7160 REMark this one actually removes what can be removed from the board
+7170 REMark and returns the score generated through that process
+7180 DEFine FuNction doRemove
+7190   LOCal i, j, y%, done, generatedScore, counter
+7200   counter = 0 : generatedScore = 0
+7210   IF NOT COMPILED : AT#0,0,0 : PRINT#0;"Before Remove":dumpremove
+7220   REPeat overall
+7230       REMark count the number of rounds we are through
+7240       counter = counter + 1
+7250       done = 1
+7260       FOR i = 0 TO DIMN(deadplay%, 1) - 1
+7270         FOR j = 0 TO DIMN(deadplay%, 2) - 1
+7280           IF deadplay%(i, j) <> 0 THEN
+7290             deadplay%(i, j) = 0
+7300             clearField i, j
+7310             REMark doStackRemoveAnimation i, j
+7320             generatedScore = generatedScore + counter
+7330             FOR y% = j TO 1 STEP - 1
+7340               PlayField%(i, y%) = PlayField% (i , y% -1)
+7350               deadplay%(i,y%) = deadplay%(i, y% - 1)
+7360               drawTile i, y%
+7370             END FOR y%
+7380             PlayField% (i, 0) = RND (0 TO 6)
+7390             deadplay%(i,0) = 0
+7400             doStackRemoveAnimation i, j
+7410             drawTile i, 0
+7420             done = 0
+7430           END IF
+7440         END FOR j
+7450       END FOR i
+7460     IF NOT COMPILED:AT#0,0,0: PRINT#0;"After remove":dumpremove
+7470     IF checkRemove = 0: EXIT overall
+7480     IF NOT COMPILED : dumpremove
+7490   END REPeat overall
+7500   RETurn generatedScore
+7510 END DEFine
+7520 :
+7530 DEFine PROCedure dumpremove
+7540   LOCal i, j
+7550   FOR i = 0  TO DIMN(deadplay%,1)-1
+7560     FOR j = 0 TO DIMN (deadplay%,2)-1
+7570       IF deadplay%(i,j) <> 0 THEN
+7580         AT#0,j+1,i:PRINT#0;"1";
+7590       ELSE
+7600         AT#0,j+1,i:PRINT #0;"0";
+7610       END IF
+7620       AT#0,j+1,i+20:PRINT#0;PlayField%(i,j)
+7630     END FOR j
+7640     PRINT #0
+7650   END FOR i
+7660 END DEFine
+7670 :
+7680 REMark +
+7690 REMark this one checks whether we are part of an alignment
+7700 DEFine FuNction isPartOfLine (x%, y%)
+7710   LOCal i, result, currentTile
+7720   result = 0
+7730   currentTile = PlayField%(x%, y%)
+7740   IF searchleft%(x%, y%, currentTile) + searchRight%(x%, y%, currentTile) >=2 THEN
+7750     RETurn 1
+7760   END IF
+7770   IF searchUp%(x%, y%, currentTile) + searchDown% (x%, y%, currentTile) >= 2 THEN
+7780     RETurn 1
+7790   END IF
+7800   RETurn 0
+7810 END DEFine
+7820 :
+7830 REMark This one checks whether there are still possible moves
+7840 DEFine FuNction movePossible
+7850   LOCal result, i, j
+7860   result = 0
+7870   FOR i = 0 TO DIMN (PlayField%, 1) - 1
+7880     FOR j = 0 TO DIMN (PlayField%, 2) - 1
+7890       IF i > 0
+7900         REMark swap with left
+7910         swap i, j, i - 1, j
+7920         result = isPartOfLine (i, j)
+7930         swap i, j, i - 1, j
+7940         IF result : EXIT i
+7950       END IF
+7960       IF i < 7
+7970         REMark swap with right
+7980         swap i, j, i + 1, j
+7990         result = isPartOfLine (i, j)
+8000         swap i, j, i + 1, j
+8010         IF result : EXIT i
+8020       END IF
+8030       IF j > 0
+8040         REMark swap with above
+8050         swap i, j, i, j - 1
+8060         result = isPartOfLine (i, j)
+8070         swap i, j, i, j - 1
+8080         IF result : EXIT i
+8090       END IF
+8100       IF j < 7
+8110         REMark swap with below
+8120         swap i, j, i, j + 1
+8130         result = isPartOfLine (i, j)
+8140         swap i, j, i, j + 1
+8150         IF result : EXIT i
+8160       END IF
+8170     END FOR j
+8180   END FOR i
+8190   IF result THEN
+8200     possibleMove%(0) = i
+8210     possibleMove%(1) = j
+8220   ELSE
+8230     possibleMove%(0) = -1
+8240     possibleMove%(1) = -1
+8250     IF NOT COMPILED : dumpremove
+8260   END IF
+8270     IF NOT COMPILED : PRINT#0;"(";i;"|";j;") possible"
+8280   RETurn result
+8290 END DEFine movePossible
+8300 :
+8310 REMark swaps (temporarily) two pieces
+8320 DEFine PROCedure swap (x1%, y1%, x2%, y2%)
+8330   LOCal temp%
+8340   temp% = PlayField%(x1%, y1%)
+8350   PlayField%(x1%, y1%) = PlayField%(x2%, y2%)
+8360   PlayField%(x2%, y2%) = temp%
+8370 END DEFine
+8380 :
+8390 REMark -
+8400 :
+8410 DEFine PROCedure noMoveDialog
+8420   LOCal channel, response
+8430   :
+8440   playSound 6
+8450   :
+8460   channel = FOPEN ("con_")
+8470   MDRAW #channel, APPA0("no_move")
+8480   REPeat noMove
+8490     response = MCALL (#channel, -1, 0, -2, 0, -3, 0)
+8500     SELect ON response
+8510       = -1 : REMark move
+8520         WMOV #channel, -1
+8530       = -2 : REMark new game
+8540         MCLEAR #channel
+8550         CLOSE #channel
+8560         InitPlayfield
+8570         drawPlayfield
+8580         RETurn
+8590       = -3 : REMark quit
+8600         quitMenu
+8610         MCLEAR #channel
+8620         CLOSE #channel
+8630         InitPlayfield
+8640         RETurn
+8650     END SELect
+8660   END REPeat noMove
+8670 END DEFine
+8680 :
+8690 DEFine PROCedure quitMenu
+8700   LOCal chan,response
+8710   chan = FOPEN ("con_")
+8720   MDRAW #chan,APPA0("quit")
+8730   REPeat quitLoop
+8740     response = MCALL(#chan, -1, 0, -2, 0)
+8750     SELect ON response
+8760         = -1 : REMark move
+8770           WMOV #chan,-1
+8780         = -2 : REMark "yes"
+8790           MCLEAR : CLOSE : CLAMP : STOP
+8800         = -3 : REMark "no"
+8810           MCLEAR #chan
+8820           REMark CLOSE #chan
+8830           RETurn
+8840     END SELect
+8850   END REPeat quitLoop
+8860 END DEFine
+8870 :
+8880 DEFine PROCedure gameMenu
+8890   LOCal chan, response
+8900   chan = FOPEN("con_")
+8910   MDRAW #chan,APPA0("gmenu")
+8920   REPeat gLoop
+8930     response = MCALL (#chan,-1,0,-2,0,-3,0,-4,bigSprites)
+8940     SELect ON response
+8950       = -1 : REMark ESC
+8960         MCLEAR #chan
+8970         CLOSE #chan
+8980         RETurn
+8990       = -2 : REMark "New game"
+9000         MCLEAR #chan
+9010         CLOSE #chan
+9020         InitPlayfield
+9030         drawPlayfield
+9040         RETurn
+9050       = -3 : REMark "quit"
+9060         MCLEAR #chan
+9070         quitMenu
+9080         MCLEAR #chan
+9090         CLOSE #chan
+9100         REMark MCLEAR #winw%
+9110         REMark CLOSE #channel
+9120         RETurn
+9130       = -4
+9140         bigSprites = NOT bigSprites
+9150         MCLEAR #chan
+9160         CLOSE #chan
+9170         MCLEAR #appwin
+9180         WRES #appwin
+9190         WRES #channel
+9200         MCLEAR #winw%
+9210         IF bigSprites THEN
+9220           MDRAW #winw%, APPA0("main_l")
+9230         ELSE
+9240           MDRAW #winw%, APPA0("main_s")
+9250         END IF
+9260         LoadSprites
+9270         MWLINK #winw%\1, #appwin
+9280         MWLINK #winw%\2, #thermwin
+9290         DrawBackground
+9300         drawPlayfield
+9310         DrawThermometer
+9320         RETurn
+9330     END SELect
+9340   END REPeat gLoop
+9350 END DEFine
+9360 :
+9370 DEFine PROCedure ReadConfig
+9380   LOCal dummy$(300),kan
+9390   REMark this reads the program's CONFIG block
+9400   RESTORE
+9410   REMark read over the dummy strings
+9420   READ dummy$, dummy$
+9430   READ bigSprites
+9440   bigSprites = NOT bigSprites
+9450   READ soundOn
+9460   IF soundOn THEN
+9470     soundEnabled = 0
+9480   ELSE
+9490     soundEnabled = 1
+9500   END IF
+9510   READ dummy$
+9520   READ sf0$: REMark print #channel;sf0$
+9530   RESTORE 9790 : READ dummy$ : READ sf1$
+9540   RESTORE 9800 : READ dummy$ : READ sf2$
+9550   RESTORE 9810 : READ dummy$ : READ sf3$
+9560   RESTORE 9820 : READ dummy$ : READ sf4$
+9570   RESTORE 9830 : READ dummy$ : READ sf5$
+9580 END DEFine
+9590 :
+9600 DEFine FuNction fileExists (name$)
+9610   LOCal handle
+9620   handle = FOP_IN(name$)
+9630   IF handle >= 0 THEN
+9640     CLOSE #handle
+9650     RETurn 1
+9660   ELSE
+9670     RETurn 0
+9680   END IF
+9690 END DEFine
+9700 :
+9710 DEFine PROCedure make
+9720   REMark CHARGE
+9730 END DEFine
+9740 REMark this is the part that holds the configurable items for the config block
+9750 DATA "$`#*","qjewels   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+9760 DATA -4444:REMark Size of user interface
+9770 DATA -4444:REMark Sound
+9780 DATA "XX","0000000000000000000000000000000000"
+9790 DATA "XX","1111111111111111111111111111111111"
+9800 DATA "XX","222222222222222222222222222222222"
+9810 DATA "XX","333333333333333333333333333333333"
+9820 DATA "XX","444444444444444444444444444444444"
+9830 DATA "XX","555555555555555555555555555555555"
